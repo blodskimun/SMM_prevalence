@@ -1,0 +1,116 @@
+---
+html_document: default
+geometry: left=1cm,right=1cm,top=2cm,bottom=2cm
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+html_notebook: default
+title: "SMM Prevalence Calculations. Nature Medicine"
+header-includes:
+- \usepackage{pdflscape}
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+---
+
+
+
+```{r , echo = FALSE, tidy=TRUE, warning=F, message=FALSE,eval=T}
+
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+
+
+prevalence_prep_data <- fread("prevalence_prep_data_NM.csv")
+
+#Prepare new variables
+prevalence_prep_data %>% mutate(p_smm_arm3 = n_SMM_arm3/n_random_arm3_BM) %>% 
+            mutate(n_est_smm_all_arms = p_smm_arm3 * n_randomized) %>% 
+            mutate(n_est_smm_all_arms_round = round(n_est_smm_all_arms)) %>% 
+            mutate(p_est = n_est_smm_all_arms/n_bloodsample) -> prevalence_prep_data
+
+
+#Fit prevalence of SMM within all participants
+glm(cbind(n_est_smm_all_arms_round,n_bloodsample-n_est_smm_all_arms_round) ~ sex * age_m,data =prevalence_prep_data, family = "binomial") -> fitted_new_fit
+
+#Data used for prediction
+to_be_fitted <- data.frame(sex = prevalence_prep_data$sex , age_m=prevalence_prep_data$age_m) 
+
+
+
+
+#Predicted values
+#fit is predicted prevalence within age group.
+#lower and upper gives 95 % confidence interval
+predict_data_new <- predict(fitted_new_fit,
+                            type = "response",
+                            newdata=to_be_fitted,
+                            se.fit=TRUE) %>% 
+  as.data.frame() %>% cbind(to_be_fitted) %>% 
+  mutate(lower = fit - 1.96*se.fit, 
+         upper = fit + 1.96*se.fit)
+
+
+predict_data_new %>% select(-residual.scale) -> predict_data_new
+
+# plotting with ggplot: 
+predict_data_new %>% ggplot(aes(x = age_m, 
+                                y = fit * 100 ,fill = sex)) + 
+  geom_line(colour = "blue") + 
+  geom_ribbon(aes(ymin = lower* 100,
+                  ymax = upper* 100), 
+              alpha = 0.5) + ggtitle("Prevalence of smoldering multiple myeloma in men and women") + 
+              labs(y = "Prevalence (%)",x = "Age (years)") +  theme_bw()
+
+
+
+
+```
+```{r , echo = FALSE, tidy=TRUE, warning=F, message=FALSE,eval=T}
+#Create table 4, as in paper, plus few extra columns 
+
+#Predicted prevalence data joined to counts   
+prevalence_prep_data %>%   cbind(predict_data_new[,-c(3,4)])  -> prevalence_prep_predict_data
+
+#
+prevalence_prep_predict_data %>% mutate(SMM_estimated_iceland = n_invited * fit) %>% 
+                                 mutate(SMM_estimated_iceland_se = n_invited * se.fit) %>% 
+  mutate(prevalence_w_ci = paste(round(fit*100,2)," [",round(lower*100,2),"-",round(upper*100,2)," ] %")) -> prevalence_prep_predict_data
+
+#Select the columns of interest
+prevalence_prep_predict_data %>% select(sex,age_grp,n_invited,n_participants,n_bloodsample,n_randomized,
+                                        n_randomized_arm3,n_random_arm3_BM,n_SMM_arm3,SMM_estimated_iceland,SMM_estimated_iceland_se,
+                                        prevalence_w_ci) -> prevalence_prep_predict_data
+
+#Create total counts and summary
+prevalence_prep_predict_data %>% summarise(sex = "Total", age_grp = "",
+                                           total_invited = sum(n_invited),
+                                           total_participants = sum(n_participants),
+                                           total_bloodsample = sum(n_bloodsample),
+                                           total_randomized = sum(n_randomized),
+                                           total_arm3 = sum(n_randomized_arm3),
+                                           total_arm3_BM = sum(n_random_arm3_BM),
+                                           total_smm = sum(n_SMM_arm3),
+                                           SMM_estimated_iceland_total = sum(SMM_estimated_iceland),
+                                           SMM_estimated_iceland_total_se = sqrt(sum(SMM_estimated_iceland_se^2))) -> prevalence_prep_predict_data_summary
+
+#Continue creating summary data for table
+prevalence_prep_predict_data_summary %>% mutate(Estimated_SMM_prevalence_in_iceland_40year_and_older = round(SMM_estimated_iceland_total/total_invited*100,2),
+                                                Confidence_interval_25 = round((SMM_estimated_iceland_total - 1.96*SMM_estimated_iceland_total_se)* 100/total_invited,2),
+                                                Confidence_interval_975 = round((SMM_estimated_iceland_total + 1.96*SMM_estimated_iceland_total_se)* 100/total_invited,2)) -> prevalence_prep_predict_data_summary
+
+#Continue creating summary data for table
+prevalence_prep_predict_data_summary %>% mutate(prevalence_w_ci = paste(Estimated_SMM_prevalence_in_iceland_40year_and_older," [ ",
+                                                                        Confidence_interval_25," - ",
+                                                                        Confidence_interval_975, " ] %")) %>% select(-Estimated_SMM_prevalence_in_iceland_40year_and_older,-Confidence_interval_25,-Confidence_interval_975) -> prevalence_prep_predict_data_summary
+
+#Prevalence of SMM in a whole population
+prevalence_prep_predict_data %>% rbind(prevalence_prep_predict_data_summary,use.names=F) -> prevalence_prep_predict_data_complete
+
+prevalence_prep_predict_data_complete 
+
+```
+
